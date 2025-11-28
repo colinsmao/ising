@@ -7,6 +7,7 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <iostream>
 
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
@@ -27,17 +28,32 @@ int pingIndex = 0;
 int pongIndex = 1;
 
 // Simulation control
-float gTemperature    = 2.0f;  // current T
-float gTempMin        = 0.5f;
-float gTempMax        = 5.0f;
-float gChemicalPotential =  0.0f;  // current μ
-float gMuMin             = -2.0f;
-float gMuMax             =  2.0f;
+const float gCriticalTemp   = 2.269f;  // 2/log(1+sqrt(2))
+const float gCriticalField  = 0.0f;
+const float gTempMin        = gCriticalTemp - 2.0f;
+const float gTempMax        = gCriticalTemp + 2.0f;
+const float gFieldMin          = gCriticalField - 4.0f;
+const float gFieldMax          = gCriticalField + 4.0f;
 
 // Panel interaction state (normalized [0,1]^2 in panel space)
-float gPanelU         = 0.0f;  // x in panel (temperature)
-float gPanelV         = 0.0f;  // y in panel (chemical potential)
+float gTemperature    = gCriticalTemp;
+float gFieldStrength  = gCriticalField;
+float gPanelU         = 0.5f;  // x in panel (temperature)
+float gPanelV         = 0.5f;  // y in panel (chemical potential)
 bool  gIsDragging     = false;
+
+const float rightFrac  = 0.25f; // right 25% of screen is the panel area
+const float borderFrac = 0.03f; // panel is 80% of that area, leaving 10% border
+
+// cell colors
+float gSpinUpColorR = 0.2f;
+float gSpinUpColorG = 0.8f;
+float gSpinUpColorB = 1.0f;
+float gSpinDownColorR = 0.95f;
+float gSpinDownColorG = 0.95f;
+float gSpinDownColorB = 0.95f;
+
+double lastPrintTime = 0.0;
 
 // =============== Utility ===============
 
@@ -170,13 +186,13 @@ void glauberHalfSweep(int parity, float temperature, float randSeed) {
     GLint locTemp   = glGetUniformLocation(simProgram, "uTemperature");
     GLint locSeed   = glGetUniformLocation(simProgram, "uRandSeed");
     GLint locTexel  = glGetUniformLocation(simProgram, "uTexelSize");
-    GLint locMu     = glGetUniformLocation(simProgram, "uChemicalPotential");
+    GLint locField     = glGetUniformLocation(simProgram, "uFieldStrength");
 
     glUniform1i(locGrid, 0);
     glUniform1i(locParity, parity);
     glUniform1f(locTemp, temperature);
     glUniform1f(locSeed, randSeed);
-    glUniform1f(locMu, gChemicalPotential);
+    glUniform1f(locField, gFieldStrength);
 
     float texelX = 1.0f / float(GRID_W);
     float texelY = 1.0f / float(GRID_H);
@@ -213,12 +229,16 @@ void renderSimToLeft(GLFWwindow* window) {
     int fbW, fbH;
     glfwGetFramebufferSize(window, &fbW, &fbH);
 
-    int panelW = fbW / 4;           // 25% for panel
+    int panelW = fbW / 4;
     int simW   = fbW - panelW;
 
     glUseProgram(displayProgram);
     GLint locGrid = glGetUniformLocation(displayProgram, "uGrid");
+    GLint locSpinUpColor = glGetUniformLocation(displayProgram, "uSpinUpColor");
+    GLint locSpinDownColor = glGetUniformLocation(displayProgram, "uSpinDownColor");
     glUniform1i(locGrid, 0);
+    glUniform3f(locSpinUpColor, gSpinUpColorR, gSpinUpColorG, gSpinUpColorB);
+    glUniform3f(locSpinDownColor, gSpinDownColorR, gSpinDownColorG, gSpinDownColorB);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gridTex[pingIndex]);
@@ -234,16 +254,28 @@ void renderPanel(GLFWwindow* window) {
     int fbW, fbH;
     glfwGetFramebufferSize(window, &fbW, &fbH);
 
-    int panelW = fbW / 4;      // panel width in pixels
-    int panelH = panelW;       // make it square
-    int panelX = fbW - panelW; // bottom-right corner
-    int panelY = 0;            // bottom
+    float regionW  = fbW * rightFrac;      // width of right-side region in framebuffer pixels
+    float regionX0 = fbW - regionW;       // left edge of panel region
+    // we'll anchor panel at bottom inside that region
+
+    float panelSize = regionW * (1.0f - 2.0f * borderFrac); // square side length
+    int   panelW    = (int)panelSize;
+    int   panelH    = (int)panelSize;
+
+    int panelX = (int)(regionX0 + borderFrac * regionW); // move right from regionX0
+    int panelY = (int)(borderFrac * regionW);            // border from bottom
 
     glUseProgram(panelProgram);
-    GLint locDot = glGetUniformLocation(panelProgram, "uDot");
-    glUniform2f(locDot, gPanelU, gPanelV);
 
-    // Square panel in bottom-right
+    GLint locDot   = glGetUniformLocation(panelProgram, "uDot");
+    GLint locUp    = glGetUniformLocation(panelProgram, "uSpinUpColor");
+    GLint locDown  = glGetUniformLocation(panelProgram, "uSpinDownColor");
+
+    glUniform2f(locDot, gPanelU, gPanelV);
+    glUniform3f(locUp,   gSpinUpColorR,   gSpinUpColorG,   gSpinUpColorB);
+    glUniform3f(locDown, gSpinDownColorR, gSpinDownColorG, gSpinDownColorB);
+
+    // panel viewport is smaller than the right region → black border around it
     glViewport(panelX, panelY, panelW, panelH);
 
     glBindVertexArray(quadVAO);
@@ -251,38 +283,47 @@ void renderPanel(GLFWwindow* window) {
     glBindVertexArray(0);
 }
 
+
 // =============== Mouse interaction for panel ===============
 
-// Convert cursor position to panel coords, update gPanelU/gPanelV + temperature
+// Convert cursor position to panel coords, update gPanelU/gPanelV + temperature/chemical potential
 void updatePanelFromCursor(GLFWwindow* window, double x, double y) {
     int winW, winH;
     glfwGetWindowSize(window, &winW, &winH);
 
-    double panelW  = winW * 0.25;
-    double panelH  = panelW;              // square
-    double panelX0 = winW - panelW;
-    double panelX1 = winW;
-    double panelY0 = winH - panelH;       // top of panel (0 at top)
-    double panelY1 = winH;                // bottom
+    double regionW  = winW * rightFrac;
+    double regionX0 = winW - regionW;
 
-    // Clamp to panel box
+    double panelSize = regionW * (1.0 - 2.0 * borderFrac);
+
+    double panelX0 = regionX0 + borderFrac * regionW;
+    double panelX1 = panelX0 + panelSize;
+
+    // In framebuffer, panelY (bottom) = borderFrac * regionW
+    double panelBottomGL = borderFrac * regionW;
+    double panelTopGL    = panelBottomGL + panelSize;
+
+    // Convert to window coords (0 at top, increasing downward):
+    double panelBottomWin = winH - panelBottomGL; // bottom
+    double panelTopWin    = winH - panelTopGL;    // top
+
+    // Clamp cursor to panel rect
     if (x < panelX0) x = panelX0;
     if (x > panelX1) x = panelX1;
-    if (y < panelY0) y = panelY0;
-    if (y > panelY1) y = panelY1;
+    if (y < panelTopWin)    y = panelTopWin;
+    if (y > panelBottomWin) y = panelBottomWin;
 
-    double u     = (x - panelX0) / panelW;       // 0..1 left→right
-    double v_raw = (y - panelY0) / panelH;       // 0..1 top→bottom
-    double v     = 1.0 - v_raw;                  // 0 bottom, 1 top
+    // Normalize to [0,1] in panel space
+    double u     = (x - panelX0) / (panelX1 - panelX0);      // 0..1 left→right
+    double v_raw = (y - panelTopWin) / (panelBottomWin - panelTopWin); // 0..1 top→bottom
+    double v     = 1.0 - v_raw;                             // 0 bottom, 1 top
 
-    gPanelU = (float)std::clamp(u, 0.0, 1.0);
-    gPanelV = (float)std::clamp(v, 0.0, 1.0);
+    gPanelU = (float)u;
+    gPanelV = (float)v;
 
-    // Map panelU -> temperature (horizontal)
-    gTemperature = gTempMin + gPanelU * (gTempMax - gTempMin);
-
-    // Map panelV -> chemical potential (vertical)
-    gChemicalPotential = gMuMin + gPanelV * (gMuMax - gMuMin);
+    // Map panelU,V -> T and μ (symmetric around critical point)
+    gTemperature   = gTempMin  + gPanelU * (gTempMax  - gTempMin);
+    gFieldStrength = gFieldMin + gPanelV * (gFieldMax - gFieldMin);
 }
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
@@ -293,16 +334,23 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
 
             int winW, winH;
             glfwGetWindowSize(window, &winW, &winH);
-            double panelW  = winW * 0.25;
-            double panelH  = panelW;
-            double panelX0 = winW - panelW;
-            double panelY0 = winH - panelH;
-            double panelX1 = winW;
-            double panelY1 = winH;
 
-            // only start dragging if we clicked within the window
+            double regionW  = winW * rightFrac;
+            double regionX0 = winW - regionW;
+
+            double panelSize = regionW * (1.0 - 2.0 * borderFrac);
+
+            double panelX0 = regionX0 + borderFrac * regionW;
+            double panelX1 = panelX0 + panelSize;
+
+            double panelBottomGL = borderFrac * regionW;
+            double panelTopGL    = panelBottomGL + panelSize;
+
+            double panelBottomWin = winH - panelBottomGL;
+            double panelTopWin    = winH - panelTopGL;
+
             if (x >= panelX0 && x <= panelX1 &&
-                y >= panelY0 && y <= panelY1) {
+                y >= panelTopWin && y <= panelBottomWin) {
                 gIsDragging = true;
                 updatePanelFromCursor(window, x, y);
             }
@@ -315,6 +363,13 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
 void cursorPosCallback(GLFWwindow* window, double x, double y) {
     if (gIsDragging) {
         updatePanelFromCursor(window, x, y);
+    }
+}
+
+void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mode) {
+    // when a user presses the escape key, we set the WindowShouldClose property to true, closing the application
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        glfwSetWindowShouldClose(window, true);
     }
 }
 
@@ -355,15 +410,10 @@ int main() {
 
     printf("GL Version: %s\n", glGetString(GL_VERSION));
 
-    // Initialize panel state from initial temperature and chemical potential
-    gPanelU = (gTemperature - gTempMin) / (gTempMax - gTempMin);
-    gPanelU = std::clamp(gPanelU, 0.0f, 1.0f);
-    gPanelV = (gChemicalPotential - gMuMin) / (gMuMax - gMuMin);
-    gPanelV = std::clamp(gPanelV, 0.0f, 1.0f);
-
     // Mouse callbacks
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
     glfwSetCursorPosCallback(window, cursorPosCallback);
+    glfwSetKeyCallback(window, keyCallback);
 
     createGridTextures(GRID_W, GRID_H);
     createSimFBO();
@@ -401,7 +451,7 @@ int main() {
         int fbW, fbH;
         glfwGetFramebufferSize(window, &fbW, &fbH);
         glViewport(0, 0, fbW, fbH);
-        glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
+        glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         renderSimToLeft(window);
@@ -409,6 +459,14 @@ int main() {
 
         glfwSwapBuffers(window);
         ++frame;
+
+        double now = glfwGetTime();
+        if (now - lastPrintTime >= 1.0) {
+            std::cout << "(T=" << gTemperature
+                      << ", C=" << gFieldStrength << ")\n";
+            lastPrintTime = now;
+        }
+
     }
 
     glDeleteProgram(simProgram);

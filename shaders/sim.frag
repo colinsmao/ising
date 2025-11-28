@@ -7,7 +7,7 @@ uniform vec2      uTexelSize;        // (1.0/W, 1.0/H)
 uniform int       uParity;          // 0 or 1
 uniform float     uTemperature;     // T (k_B = 1)
 uniform float     uRandSeed;
-uniform float     uChemicalPotential; // μ
+uniform float     uFieldStrength; // h
 
 // Simple hash-based RNG
 float hash(vec2 p, float seed) {
@@ -38,14 +38,19 @@ void main() {
     float sLeft  = texture(uGrid, vUV - offsetX).r;
     float sRight = texture(uGrid, vUV + offsetX).r;
 
+    // Neighbor contribution
     float sumN = sUp + sDown + sLeft + sRight;
 
-    // Local "field" = neighbor sum + chemical potential term
-    // This gives ΔE = 2 * s * (sumN + μ), i.e. ±2μ extra depending on spin
-    float localField = sumN + uChemicalPotential;
-    float dE = 2.0 * sCenter * localField;
+    // Ising part: ΔE_J = 2 * s * sumN
+    float deltaJ  = 2.0 * sCenter * sumN;
 
-    // Glauber with temperature: p = 1 / (1 + exp(ΔE / T)), k_B = 1
+    // Field part: ΔE_h = 2 * h * s
+    float deltaMu = 2.0 * uFieldStrength * sCenter;
+
+    // Total ΔE = neighbor + chemical potential
+    float dE = deltaJ + deltaMu;
+
+    // Glauber probability: p = 1 / (1 + exp(ΔE / T))
     float p = 1.0 / (1.0 + exp(dE / uTemperature));
 
     float r = hash(vUV * gridSize, uRandSeed);

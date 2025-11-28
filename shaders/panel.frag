@@ -2,24 +2,32 @@
 in vec2 vUV;
 out vec4 FragColor;
 
-uniform vec2 uDot; // [0,1]^2 dot position (x=temp axis, y=mu axis later)
+uniform vec2 uDot;              // [0,1]^2 selected point
+uniform vec3 uSpinUpColor;      // spin-up color
+uniform vec3 uSpinDownColor;    // spin-down color
 
 void main() {
-    vec3 bg = vec3(0.12, 0.12, 0.15);
-    vec3 col = bg;
+    // ----- Background: angle-based shading spinUp -> spinDown -----
+    vec2 center = vec2(0.5);
+    vec2 rel    = vUV - center;
 
-    // Optional subtle grid (10x10)
-    vec2 g = fract(vUV * 10.0);
-    float line = (step(g.x, 0.01) + step(g.y, 0.01));
-    col += line * 0.03;
+    // Angle in [-pi, pi], 0 along +X, π / -π along -X (horizontal negative)
+    float phi = atan(rel.y, rel.x);
+    const float PI = 3.14159265359;
 
-    // Dot
+    // Map phi ∈ [-pi/2, pi/2] to t ∈ [0,1], clamped for more extreme values
+    float t = (phi + 0.5 * PI) / PI;
+    t = clamp(t, 0.0, 1.0);
+
+    vec3 col = mix(uSpinDownColor, uSpinUpColor, t);
+
+    // ----- Sharp dot on top -----
     float d = length(vUV - uDot);
-    float r = 0.03;
-    float edge = smoothstep(r, r - 0.01, d);
+    float r = 0.02; // dot radius
 
-    vec3 dotColor = vec3(1.0, 0.8, 0.2);
-    col = mix(dotColor, col, edge);
+    if (d < r) {
+        col = vec3(0.0);  // solid black dot
+    }
 
     FragColor = vec4(col, 1.0);
 }
