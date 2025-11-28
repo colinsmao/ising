@@ -30,10 +30,13 @@ int pongIndex = 1;
 float gTemperature    = 2.0f;  // current T
 float gTempMin        = 0.5f;
 float gTempMax        = 5.0f;
+float gChemicalPotential =  0.0f;  // current μ
+float gMuMin             = -2.0f;
+float gMuMax             =  2.0f;
 
 // Panel interaction state (normalized [0,1]^2 in panel space)
-float gPanelU         = 0.0f;  // x in panel (mapped to temperature)
-float gPanelV         = 0.5f;  // y in panel (reserved for chemical potential)
+float gPanelU         = 0.0f;  // x in panel (temperature)
+float gPanelV         = 0.0f;  // y in panel (chemical potential)
 bool  gIsDragging     = false;
 
 // =============== Utility ===============
@@ -167,11 +170,13 @@ void glauberHalfSweep(int parity, float temperature, float randSeed) {
     GLint locTemp   = glGetUniformLocation(simProgram, "uTemperature");
     GLint locSeed   = glGetUniformLocation(simProgram, "uRandSeed");
     GLint locTexel  = glGetUniformLocation(simProgram, "uTexelSize");
+    GLint locMu     = glGetUniformLocation(simProgram, "uChemicalPotential");
 
     glUniform1i(locGrid, 0);
     glUniform1i(locParity, parity);
     glUniform1f(locTemp, temperature);
     glUniform1f(locSeed, randSeed);
+    glUniform1f(locMu, gChemicalPotential);
 
     float texelX = 1.0f / float(GRID_W);
     float texelY = 1.0f / float(GRID_H);
@@ -255,10 +260,10 @@ void updatePanelFromCursor(GLFWwindow* window, double x, double y) {
 
     double panelW  = winW * 0.25;
     double panelH  = panelW;              // square
-    double panelX0 = winW - panelW;       // left edge of panel
-    double panelX1 = winW;                // right edge
-    double panelY0 = winH - panelH;       // TOP edge of panel (window coords: 0=top)
-    double panelY1 = winH;                // bottom edge
+    double panelX0 = winW - panelW;
+    double panelX1 = winW;
+    double panelY0 = winH - panelH;       // top of panel (0 at top)
+    double panelY1 = winH;                // bottom
 
     // Clamp to panel box
     if (x < panelX0) x = panelX0;
@@ -266,15 +271,18 @@ void updatePanelFromCursor(GLFWwindow* window, double x, double y) {
     if (y < panelY0) y = panelY0;
     if (y > panelY1) y = panelY1;
 
-    double u = (x - panelX0) / panelW;     // 0..1 left→right
-    double v_raw = (y - panelY0) / panelH; // 0..1 top→bottom
-    double v = 1.0 - v_raw;               // 0 bottom, 1 top
+    double u     = (x - panelX0) / panelW;       // 0..1 left→right
+    double v_raw = (y - panelY0) / panelH;       // 0..1 top→bottom
+    double v     = 1.0 - v_raw;                  // 0 bottom, 1 top
 
     gPanelU = (float)std::clamp(u, 0.0, 1.0);
     gPanelV = (float)std::clamp(v, 0.0, 1.0);
 
-    // Map panelU -> temperature immediately
+    // Map panelU -> temperature (horizontal)
     gTemperature = gTempMin + gPanelU * (gTempMax - gTempMin);
+
+    // Map panelV -> chemical potential (vertical)
+    gChemicalPotential = gMuMin + gPanelV * (gMuMax - gMuMin);
 }
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
@@ -347,9 +355,11 @@ int main() {
 
     printf("GL Version: %s\n", glGetString(GL_VERSION));
 
-    // Initialize panel state from initial temperature
+    // Initialize panel state from initial temperature and chemical potential
     gPanelU = (gTemperature - gTempMin) / (gTempMax - gTempMin);
     gPanelU = std::clamp(gPanelU, 0.0f, 1.0f);
+    gPanelV = (gChemicalPotential - gMuMin) / (gMuMax - gMuMin);
+    gPanelV = std::clamp(gPanelV, 0.0f, 1.0f);
 
     // Mouse callbacks
     glfwSetMouseButtonCallback(window, mouseButtonCallback);

@@ -3,10 +3,11 @@ in vec2 vUV;
 out vec4 FragColor;
 
 uniform sampler2D uGrid;
-uniform vec2      uTexelSize;   // (1.0/W, 1.0/H)
-uniform int       uParity;      // 0 or 1
-uniform float     uTemperature; // T (k_B = 1)
+uniform vec2      uTexelSize;        // (1.0/W, 1.0/H)
+uniform int       uParity;          // 0 or 1
+uniform float     uTemperature;     // T (k_B = 1)
 uniform float     uRandSeed;
+uniform float     uChemicalPotential; // μ
 
 // Simple hash-based RNG
 float hash(vec2 p, float seed) {
@@ -39,8 +40,10 @@ void main() {
 
     float sumN = sUp + sDown + sLeft + sRight;
 
-    // ΔE = 2 * s * sumN  (J = 1)
-    float dE = 2.0 * sCenter * sumN;
+    // Local "field" = neighbor sum + chemical potential term
+    // This gives ΔE = 2 * s * (sumN + μ), i.e. ±2μ extra depending on spin
+    float localField = sumN + uChemicalPotential;
+    float dE = 2.0 * sCenter * localField;
 
     // Glauber with temperature: p = 1 / (1 + exp(ΔE / T)), k_B = 1
     float p = 1.0 / (1.0 + exp(dE / uTemperature));
