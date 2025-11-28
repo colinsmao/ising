@@ -16,13 +16,13 @@ float hash(vec2 p, float seed) {
 }
 
 void main() {
-    vec2 gridSize = 1.0 / uTexelSize;
-    ivec2 ij = ivec2(floor(vUV * gridSize)); // (i,j)
+    vec2  gridSize = 1.0 / uTexelSize;
+    ivec2 ij       = ivec2(floor(vUV * gridSize)); // (i,j)
 
-    int parity = (ij.x + ij.y) & 1;
-    float sCenter = texture(uGrid, vUV).r;   // -1 or +1
+    int   parity   = (ij.x + ij.y) & 1;
+    float sCenter  = texture(uGrid, vUV).r;        // -1 or +1
 
-    // Not this parity → copy through
+    // Not this parity → just copy
     if (parity != uParity) {
         FragColor = vec4(sCenter, 0.0, 0.0, 1.0);
         return;
@@ -42,8 +42,7 @@ void main() {
     // ΔE = 2 * s * sumN  (J = 1)
     float dE = 2.0 * sCenter * sumN;
 
-    // Glauber probability with temperature: p = 1 / (1 + exp(ΔE / (k_B T)))
-    // here k_B = 1, so p = 1 / (1 + exp(ΔE / T))
+    // Glauber with temperature: p = 1 / (1 + exp(ΔE / T)), k_B = 1
     float p = 1.0 / (1.0 + exp(dE / uTemperature));
 
     float r = hash(vUV * gridSize, uRandSeed);

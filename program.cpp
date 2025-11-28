@@ -1,3 +1,4 @@
+// main.cpp
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -14,15 +15,28 @@
 static const int GRID_W = 512;
 static const int GRID_H = 512;
 
+// OpenGL objects
 GLuint gridTex[2];
 GLuint simFBO = 0;
 GLuint quadVAO = 0, quadVBO = 0;
 GLuint simProgram = 0;
 GLuint displayProgram = 0;
+GLuint panelProgram = 0;
+
 int pingIndex = 0;
 int pongIndex = 1;
 
-// ---------------- Helpers ----------------
+// Simulation control
+float gTemperature    = 2.0f;  // current T
+float gTempMin        = 0.5f;
+float gTempMax        = 5.0f;
+
+// Panel interaction state (normalized [0,1]^2 in panel space)
+float gPanelU         = 0.0f;  // x in panel (mapped to temperature)
+float gPanelV         = 0.5f;  // y in panel (reserved for chemical potential)
+bool  gIsDragging     = false;
+
+// =============== Utility ===============
 
 void glfwErrorCallback(int error, const char* desc) {
     fprintf(stderr, "GLFW error %d: %s\n", error, desc);
@@ -31,7 +45,7 @@ void glfwErrorCallback(int error, const char* desc) {
 std::string loadTextFile(const char* path) {
     std::ifstream file(path);
     if (!file) {
-        fprintf(stderr, "Failed to open shader file: %s\n", path);
+        fprintf(stderr, "Failed to open file: %s\n", path);
         return "";
     }
     std::stringstream ss;
@@ -39,9 +53,13 @@ std::string loadTextFile(const char* path) {
     return ss.str();
 }
 
-GLuint compileShader(GLenum type, const char* src) {
+GLuint compileShaderFromFile(GLenum type, const char* path) {
+    std::string src = loadTextFile(path);
+    if (src.empty()) return 0;
+    const char* csrc = src.c_str();
+
     GLuint sh = glCreateShader(type);
-    glShaderSource(sh, 1, &src, nullptr);
+    glShaderSource(sh, 1, &csrc, nullptr);
     glCompileShader(sh);
     GLint ok = 0;
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
@@ -50,18 +68,11 @@ GLuint compileShader(GLenum type, const char* src) {
         glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &logLen);
         std::vector<char> log(logLen);
         glGetShaderInfoLog(sh, logLen, nullptr, log.data());
-        fprintf(stderr, "Shader compile error:\n%s\n", log.data());
+        fprintf(stderr, "Shader compile error in %s:\n%s\n", path, log.data());
         glDeleteShader(sh);
         return 0;
     }
     return sh;
-}
-
-GLuint compileShaderFromFile(GLenum type, const char* path) {
-    std::string src = loadTextFile(path);
-    if (src.empty()) return 0;
-    const char* csrc = src.c_str();
-    return compileShader(type, csrc);
 }
 
 GLuint linkProgram(GLuint vs, GLuint fs) {
@@ -82,6 +93,8 @@ GLuint linkProgram(GLuint vs, GLuint fs) {
     }
     return prog;
 }
+
+// =============== Simulation buffers ===============
 
 std::vector<float> makeInitialSpins(int W, int H) {
     std::vector<float> data(W * H);
@@ -144,6 +157,8 @@ void createFullscreenQuad() {
     glBindVertexArray(0);
 }
 
+// =============== Simulation step ===============
+
 void glauberHalfSweep(int parity, float temperature, float randSeed) {
     glUseProgram(simProgram);
 
@@ -187,26 +202,115 @@ void glauberSweep(float temperature, float frameIndex) {
     glauberHalfSweep(1, temperature, frameIndex + 1.0f);
 }
 
-void renderGridToScreen(GLFWwindow* window) {
-    glUseProgram(displayProgram);
+// =============== Rendering ===============
 
+void renderSimToLeft(GLFWwindow* window) {
+    int fbW, fbH;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+
+    int panelW = fbW / 4;           // 25% for panel
+    int simW   = fbW - panelW;
+
+    glUseProgram(displayProgram);
     GLint locGrid = glGetUniformLocation(displayProgram, "uGrid");
     glUniform1i(locGrid, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gridTex[pingIndex]);
 
-    // Use framebuffer size, not window size
-    int fbW, fbH;
-    glfwGetFramebufferSize(window, &fbW, &fbH);
-    glViewport(0, 0, fbW, fbH);
+    glViewport(0, 0, simW, fbH);
 
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 }
 
-// ---------------- main ----------------
+void renderPanel(GLFWwindow* window) {
+    int fbW, fbH;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+
+    int panelW = fbW / 4;      // panel width in pixels
+    int panelH = panelW;       // make it square
+    int panelX = fbW - panelW; // bottom-right corner
+    int panelY = 0;            // bottom
+
+    glUseProgram(panelProgram);
+    GLint locDot = glGetUniformLocation(panelProgram, "uDot");
+    glUniform2f(locDot, gPanelU, gPanelV);
+
+    // Square panel in bottom-right
+    glViewport(panelX, panelY, panelW, panelH);
+
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+}
+
+// =============== Mouse interaction for panel ===============
+
+// Convert cursor position to panel coords, update gPanelU/gPanelV + temperature
+void updatePanelFromCursor(GLFWwindow* window, double x, double y) {
+    int winW, winH;
+    glfwGetWindowSize(window, &winW, &winH);
+
+    double panelW  = winW * 0.25;
+    double panelH  = panelW;              // square
+    double panelX0 = winW - panelW;       // left edge of panel
+    double panelX1 = winW;                // right edge
+    double panelY0 = winH - panelH;       // TOP edge of panel (window coords: 0=top)
+    double panelY1 = winH;                // bottom edge
+
+    // Clamp to panel box
+    if (x < panelX0) x = panelX0;
+    if (x > panelX1) x = panelX1;
+    if (y < panelY0) y = panelY0;
+    if (y > panelY1) y = panelY1;
+
+    double u = (x - panelX0) / panelW;     // 0..1 left→right
+    double v_raw = (y - panelY0) / panelH; // 0..1 top→bottom
+    double v = 1.0 - v_raw;               // 0 bottom, 1 top
+
+    gPanelU = (float)std::clamp(u, 0.0, 1.0);
+    gPanelV = (float)std::clamp(v, 0.0, 1.0);
+
+    // Map panelU -> temperature immediately
+    gTemperature = gTempMin + gPanelU * (gTempMax - gTempMin);
+}
+
+void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_PRESS) {
+            double x, y;
+            glfwGetCursorPos(window, &x, &y);
+
+            int winW, winH;
+            glfwGetWindowSize(window, &winW, &winH);
+            double panelW  = winW * 0.25;
+            double panelH  = panelW;
+            double panelX0 = winW - panelW;
+            double panelY0 = winH - panelH;
+            double panelX1 = winW;
+            double panelY1 = winH;
+
+            // only start dragging if we clicked within the window
+            if (x >= panelX0 && x <= panelX1 &&
+                y >= panelY0 && y <= panelY1) {
+                gIsDragging = true;
+                updatePanelFromCursor(window, x, y);
+            }
+        } else if (action == GLFW_RELEASE) {
+            gIsDragging = false;
+        }
+    }
+}
+
+void cursorPosCallback(GLFWwindow* window, double x, double y) {
+    if (gIsDragging) {
+        updatePanelFromCursor(window, x, y);
+    }
+}
+
+// =============== main ===============
 
 int main() {
     glfwSetErrorCallback(glfwErrorCallback);
@@ -223,9 +327,10 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    int windowWidth = 800, windowHeight = 800;
+    int windowWidth = 1000;
+    int windowHeight = 800;
     GLFWwindow* window = glfwCreateWindow(windowWidth, windowHeight,
-                                          "Glauber Ising (GL3 ping-pong)", nullptr, nullptr);
+                                          "Glauber Ising + Panel", nullptr, nullptr);
     if (!window) {
         fprintf(stderr, "Failed to create window\n");
         glfwTerminate();
@@ -242,39 +347,55 @@ int main() {
 
     printf("GL Version: %s\n", glGetString(GL_VERSION));
 
+    // Initialize panel state from initial temperature
+    gPanelU = (gTemperature - gTempMin) / (gTempMax - gTempMin);
+    gPanelU = std::clamp(gPanelU, 0.0f, 1.0f);
+
+    // Mouse callbacks
+    glfwSetMouseButtonCallback(window, mouseButtonCallback);
+    glfwSetCursorPosCallback(window, cursorPosCallback);
+
     createGridTextures(GRID_W, GRID_H);
     createSimFBO();
     createFullscreenQuad();
 
+    // Build programs from shader files
     const char* fullscreenVertPath = "shaders/fullscreen.vert";
     const char* simFragPath        = "shaders/sim.frag";
     const char* displayFragPath    = "shaders/display.frag";
+    const char* panelFragPath      = "shaders/panel.frag";
 
-    // Simulation program
     GLuint vsFullscreen = compileShaderFromFile(GL_VERTEX_SHADER, fullscreenVertPath);
     GLuint fsSim        = compileShaderFromFile(GL_FRAGMENT_SHADER, simFragPath);
     simProgram          = linkProgram(vsFullscreen, fsSim);
     glDeleteShader(fsSim);
 
-    // Display program
     GLuint fsDisplay    = compileShaderFromFile(GL_FRAGMENT_SHADER, displayFragPath);
     displayProgram      = linkProgram(vsFullscreen, fsDisplay);
     glDeleteShader(fsDisplay);
-    // We can reuse the same vertex shader for both and delete after linking
+
+    GLuint fsPanel      = compileShaderFromFile(GL_FRAGMENT_SHADER, panelFragPath);
+    panelProgram        = linkProgram(vsFullscreen, fsPanel);
+    glDeleteShader(fsPanel);
+
     glDeleteShader(vsFullscreen);
 
-    float temperature = 2.4f;
     int frame = 0;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        glauberSweep(temperature, float(frame));
+        // Run one Glauber sweep per frame with current temperature
+        glauberSweep(gTemperature, float(frame));
 
-        glClearColor(0.f, 0.f, 0.f, 1.f);
+        int fbW, fbH;
+        glfwGetFramebufferSize(window, &fbW, &fbH);
+        glViewport(0, 0, fbW, fbH);
+        glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        renderGridToScreen(window);
+        renderSimToLeft(window);
+        renderPanel(window);
 
         glfwSwapBuffers(window);
         ++frame;
@@ -282,6 +403,7 @@ int main() {
 
     glDeleteProgram(simProgram);
     glDeleteProgram(displayProgram);
+    glDeleteProgram(panelProgram);
     glDeleteFramebuffers(1, &simFBO);
     glDeleteTextures(2, gridTex);
     glDeleteBuffers(1, &quadVBO);
