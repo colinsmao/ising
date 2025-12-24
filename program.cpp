@@ -13,8 +13,17 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "imgui/imgui.h"
+#include "imgui/backends/imgui_impl_glfw.h"
+#include "imgui/backends/imgui_impl_opengl3.h"
+
+// layout
 static const int GRID_W = 512;
 static const int GRID_H = 512;
+static const float rightFrac  = 0.25f; // right 25% of screen is the info area, including panel
+static const float borderFrac = 0.03f; // border width around panel
+static const int windowHeight = 512;
+static const int windowWidth = (int)(windowHeight * (1 + rightFrac));
 
 // OpenGL objects
 GLuint gridTex[2];
@@ -32,8 +41,8 @@ const float gCriticalTemp   = 2.269f;  // 2/log(1+sqrt(2))
 const float gCriticalField  = 0.0f;
 const float gTempMin        = gCriticalTemp - 2.0f;
 const float gTempMax        = gCriticalTemp + 2.0f;
-const float gFieldMin          = gCriticalField - 4.0f;
-const float gFieldMax          = gCriticalField + 4.0f;
+const float gFieldMin       = gCriticalField - 1.0f;
+const float gFieldMax       = gCriticalField + 1.0f;
 
 // Panel interaction state (normalized [0,1]^2 in panel space)
 float gTemperature    = gCriticalTemp;
@@ -41,9 +50,6 @@ float gFieldStrength  = gCriticalField;
 float gPanelU         = 0.5f;  // x in panel (temperature)
 float gPanelV         = 0.5f;  // y in panel (chemical potential)
 bool  gIsDragging     = false;
-
-const float rightFrac  = 0.25f; // right 25% of screen is the panel area
-const float borderFrac = 0.03f; // panel is 80% of that area, leaving 10% border
 
 // cell colors
 float gSpinUpColorR = 0.2f;
@@ -281,6 +287,32 @@ void renderPanel(GLFWwindow* window) {
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
+
+    // render ImGui on top
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    // ImGui uses window coords
+    int winW, winH;
+    glfwGetWindowSize(window, &winW, &winH);
+    float rightPanelX0 = winW * (1.0f - rightFrac);
+    float margin = winW * rightFrac * borderFrac;
+    ImGui::SetNextWindowPos(ImVec2(rightPanelX0 + margin, margin), ImGuiCond_Always);
+
+    ImGui::Begin("Ising State",
+                 nullptr,
+                 ImGuiWindowFlags_AlwaysAutoResize |
+                 ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoMove);
+
+    ImGui::Text("T/Tc = % 0.3f", gTemperature / gCriticalTemp);
+    ImGui::Text("   h = %+0.3f", gFieldStrength);
+
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 
@@ -390,10 +422,8 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    int windowWidth = 1000;
-    int windowHeight = 800;
     GLFWwindow* window = glfwCreateWindow(windowWidth, windowHeight,
-                                          "Glauber Ising + Panel", nullptr, nullptr);
+                                          "Glauber Ising", nullptr, nullptr);
     if (!window) {
         fprintf(stderr, "Failed to create window\n");
         glfwTerminate();
@@ -409,6 +439,14 @@ int main() {
     }
 
     printf("GL Version: %s\n", glGetString(GL_VERSION));
+
+    // IMGUI init
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330 core");
 
     // Mouse callbacks
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
@@ -459,14 +497,6 @@ int main() {
 
         glfwSwapBuffers(window);
         ++frame;
-
-        double now = glfwGetTime();
-        if (now - lastPrintTime >= 1.0) {
-            std::cout << "(T=" << gTemperature
-                      << ", C=" << gFieldStrength << ")\n";
-            lastPrintTime = now;
-        }
-
     }
 
     glDeleteProgram(simProgram);
@@ -477,6 +507,9 @@ int main() {
     glDeleteBuffers(1, &quadVBO);
     glDeleteVertexArrays(1, &quadVAO);
 
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

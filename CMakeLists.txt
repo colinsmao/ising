@@ -13,14 +13,25 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -ffast-math")  # -fno-finite-math-on
 include_directories(${PROJECT_SOURCE_DIR}/glad/include)
 include_directories(${PROJECT_SOURCE_DIR}/glfw-3.3.7.bin.MACOS/include)
 include_directories(${PROJECT_SOURCE_DIR}/includes)
-include_directories(/opt/homebrew/Cellar/freetype/2.13.3/include/freetype2)
 
-# find_package(OpenMP REQUIRED)
-add_executable(ising program.cpp)
-# add_subdirectory(${PROJECT_SOURCE_DIR}/render)
-# target_link_libraries(boids OpenMP::OpenMP_CXX)
+# ImGui
+include_directories(${PROJECT_SOURCE_DIR}/imgui)
+include_directories(${PROJECT_SOURCE_DIR}/imgui/backends)
+set(IMGUI_SOURCES
+        ${PROJECT_SOURCE_DIR}/imgui/imgui.cpp
+        ${PROJECT_SOURCE_DIR}/imgui/imgui_draw.cpp
+        ${PROJECT_SOURCE_DIR}/imgui/imgui_tables.cpp
+        ${PROJECT_SOURCE_DIR}/imgui/imgui_widgets.cpp
+        ${PROJECT_SOURCE_DIR}/imgui/backends/imgui_impl_glfw.cpp
+        ${PROJECT_SOURCE_DIR}/imgui/backends/imgui_impl_opengl3.cpp
+)
+add_compile_definitions(IMGUI_IMPL_OPENGL_LOADER_GLAD)
+
+add_executable(ising
+        program.cpp
+        ${IMGUI_SOURCES}
+)
 
 link_directories(${PROJECT_SOURCE_DIR}/glfw-3.3.7.bin.MACOS/lib-arm64)
 add_subdirectory(${PROJECT_SOURCE_DIR}/glad/)
 target_link_libraries(ising ${PROJECT_SOURCE_DIR}/glfw-3.3.7.bin.MACOS/lib-arm64/libglfw3.a glad)
-target_link_libraries(ising /opt/homebrew/Cellar/freetype/2.13.3/lib/libfreetype.6.dylib)
