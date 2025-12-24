@@ -50,6 +50,7 @@ float gFieldStrength  = gCriticalField;
 float gPanelU         = 0.5f;  // x in panel (temperature)
 float gPanelV         = 0.5f;  // y in panel (chemical potential)
 bool  gIsDragging     = false;
+bool  gLoopBC         = true;  // true = torus (GL_REPEAT), false = open-ish (CLAMP)
 
 // cell colors
 float gSpinUpColorR = 0.2f;
@@ -136,12 +137,10 @@ void createGridTextures(int W, int H) {
     auto initData = makeInitialSpins(W, H);
 
     glGenTextures(2, gridTex);
-    for (int k = 0; k < 2; ++k) {
-        glBindTexture(GL_TEXTURE_2D, gridTex[k]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F,
-                     W, H, 0,
-                     GL_RED, GL_FLOAT,
-                     (k == 0 ? initData.data() : nullptr));
+    for (unsigned int k : gridTex) {
+        glBindTexture(GL_TEXTURE_2D, k);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, W, H, 0,
+                     GL_RED, GL_FLOAT, initData.data());
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -149,6 +148,22 @@ void createGridTextures(int W, int H) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+static void applyBoundaryWrap() {
+    for (unsigned int k : gridTex) {
+        glBindTexture(GL_TEXTURE_2D, k);
+
+        if (gLoopBC) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        } else {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 void createSimFBO() {
@@ -296,10 +311,12 @@ void renderPanel(GLFWwindow* window) {
     // ImGui uses window coords
     int winW, winH;
     glfwGetWindowSize(window, &winW, &winH);
-    float rightPanelX0 = winW * (1.0f - rightFrac);
-    float margin = winW * rightFrac * borderFrac;
-    ImGui::SetNextWindowPos(ImVec2(rightPanelX0 + margin, margin), ImGuiCond_Always);
+    float winPanelX0 = winW * (1.0f - rightFrac);
+    float winWidth = winW * rightFrac * (1.0f - 2.0f * borderFrac);
+    float winMargin = winW * rightFrac * borderFrac;
 
+    ImGui::SetNextWindowPos(ImVec2(winPanelX0 + winMargin, winMargin), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(winWidth, 0.0f), ImGuiCond_Always);  // auto height
     ImGui::Begin("Ising State",
                  nullptr,
                  ImGuiWindowFlags_AlwaysAutoResize |
@@ -308,6 +325,26 @@ void renderPanel(GLFWwindow* window) {
 
     ImGui::Text("T/Tc = % 0.3f", gTemperature / gCriticalTemp);
     ImGui::Text("   h = %+0.3f", gFieldStrength);
+
+    float infoHeight = ImGui::GetWindowSize().y;  // capture height for positioning next window
+    ImGui::End();
+
+    ImGui::SetNextWindowPos(ImVec2(winPanelX0 + winMargin, infoHeight + 2 * winMargin), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(winWidth, 0.0f), ImGuiCond_Always);  // auto height
+    ImGui::Begin("Loop boundary",
+                 nullptr,
+                 ImGuiWindowFlags_AlwaysAutoResize |
+                 ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoTitleBar);
+
+    bool prev = gLoopBC;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 6.0f));
+    ImGui::Checkbox("Loop boundary", &gLoopBC);
+    ImGui::PopStyleVar();
+    if (gLoopBC != prev) {
+        applyBoundaryWrap();
+    }
 
     ImGui::End();
 
@@ -359,6 +396,9 @@ void updatePanelFromCursor(GLFWwindow* window, double x, double y) {
 }
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
+    if (ImGui::GetIO().WantCaptureMouse) return;  // if ImGui wants the mouse, don't handle panel dragging etc.
+
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
             double x, y;
@@ -393,13 +433,16 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
 }
 
 void cursorPosCallback(GLFWwindow* window, double x, double y) {
+    ImGui_ImplGlfw_CursorPosCallback(window, x, y);
+    if (ImGui::GetIO().WantCaptureMouse) return;
     if (gIsDragging) {
         updatePanelFromCursor(window, x, y);
     }
 }
 
-void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mode) {
-    // when a user presses the escape key, we set the WindowShouldClose property to true, closing the application
+void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods) {
+    ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
+    if (ImGui::GetIO().WantCaptureKeyboard) return;
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         glfwSetWindowShouldClose(window, true);
     }
@@ -445,7 +488,7 @@ int main() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplGlfw_InitForOpenGL(window, false);  // need to forward callbacks manually
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
     // Mouse callbacks
